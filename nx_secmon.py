@@ -432,6 +432,9 @@ def load_file(li, neflags, format):
     emu = Emulator()
     emu.run_emulator(pk11)
 
+    # Refresh IRAM contents to reflect any decompression that may have occurred.
+    idaapi.mem2base(emu.read_mem(PK1L_ADDRESS, PK1L_SIZE), PK1L_ADDRESS)
+
     iram_mappings  = []
     dram_mappings  = []
     tzram_mappings = []
