@@ -553,16 +553,19 @@ def load_file(li, neflags, format):
             add_segment(vaddr, size, '.tzram_ro_view', 'CONST')
         elif len(group) == 1 and group[0][2] == 0x1000:
             vaddr, paddr, size, attr = group[0]
+            pk2ldr_group = filter(lambda g: is_executable(g[0]) and g[0][2] == 0x2000, tzram_groups)
+            assert len(pk2ldr_group) == 1
+            pk2ldr_group = pk2ldr_group[0][0]
             if paddr == emu.l3_table:
                 add_segment(vaddr, size, '.l3_table', 'DATA')
             elif paddr == (emu.l3_table - 0x1000):
                 add_segment(vaddr, size, '.l2_table', 'DATA')
-            elif vaddr == emu.phys_to_virt[emu.ttbr & ~0xFFF][0]:
+            elif paddr == pk2ldr_group[1]:
+                add_segment(vaddr, size, '.reused_stack0', 'DATA')
+            elif paddr == (pk2ldr_group[1] + 0x1000):
+                add_segment(vaddr, size, '.reused_stack1', 'DATA')
+            elif vaddr == emu.phys_to_virt[emu.ttbr & ~0xFFF][0] or vaddr == emu.core0_stack_page:
                 add_segment(vaddr, size, '.shared_data', 'DATA')
-            elif vaddr == emu.core0_stack_page:
-                add_segment(vaddr, size, '.core012_stack', 'DATA')
-            elif paddr == (emu.virt_to_phys[emu.core0_stack_page][0] + 0x1000):
-                add_segment(vaddr, size, '.core3_stack', 'DATA')
             else:
                 print 'Unknown Group'
                 for m in group:
