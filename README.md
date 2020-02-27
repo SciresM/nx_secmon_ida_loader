@@ -8,4 +8,6 @@ It automatically performs binary loading by emulating the secure monitor to dete
 
 Additionally, using the same emulation techniques it automatically labels entrypoint, exception vectors, and SMC tables (+ all entries in the tables).
 
+To use, decrypt the `package1` firmware package, and load.
+
 Note: use of this script requires unicorn to be installed.
