@@ -41,7 +41,7 @@ PK1L_ADDRESS = 0x40010000
 PK1L_SIZE    = IRAM_BASE + IRAM_SIZE - PK1L_ADDRESS
 
 TZRAM_BASE   = 0x7C010000
-TZRAM_SIZE   = 0x00010000
+TZRAM_SIZE   = 0x00040000
 
 KNOWN_MAPPINGS = {
     (0x50041000, 0x1000) : ('.arm_gicd',    'IO'),
@@ -66,17 +66,19 @@ KNOWN_MAPPINGS = {
     (0x70412000, 0x2000) : ('.se2',         'IO'),
 }
 
-def find_entrypoint(bin):
-    if bin[0x4000:0x4004] == 'PK11':
+def find_entrypoint(data):
+    if data[0x4000:0x4004] == 'PK11':
         ofs = 0x4000
-    elif bin[0x7000:0x7004] == 'PK11':
+    elif data[0x7000:0x7004] == 'PK11':
         ofs = 0x7000
+    elif data[0x7170:0x7174] == 'PK11':
+        ofs = 0x7170
     else:
         raise ValueError('No PK11 Header?')
     for i in xrange(4, 0x20, 4):
-        semo_maybe = ofs + 0x20 + up('<I', bin[ofs + i:ofs + i + 4])[0]
-        if 4 <= semo_maybe and semo_maybe <= len(bin) - 4:
-            if bin[semo_maybe-4:semo_maybe+4] == '\x00\x00\x00\x00\xDF\x4F\x03\xD5':
+        semo_maybe = ofs + 0x20 + up('<I', data[ofs + i:ofs + i + 4])[0]
+        if 4 <= semo_maybe and semo_maybe <= len(data) - 4:
+            if data[semo_maybe-4:semo_maybe+4] == '\x00\x00\x00\x00\xDF\x4F\x03\xD5':
                 return semo_maybe
     raise ValueError('Failed to find SecMon')
 
@@ -238,15 +240,26 @@ class Emulator:
                         continue
                 break
 
-    def run_emulator(self, bin):
-        self.mu.mem_write(PK1L_ADDRESS, bin)
-        entrypoint = PK1L_ADDRESS + find_entrypoint(bin)
+    def run_emulator(self, data):
+        self.mu.mem_write(PK1L_ADDRESS, data)
+        entrypoint = PK1L_ADDRESS + find_entrypoint(data)
         h = self.mu.hook_add(UC_HOOK_CODE, Emulator.hook_code, self)
+        if entrypoint == PK1L_ADDRESS + 0x20170:
+            data = data[:0x20000] + data[0x20170:]
+            entrypoint = PK1L_ADDRESS + 0x20000
+        self.mu.mem_write(PK1L_ADDRESS, data)
 
         self.entrypoint = entrypoint
         self.simulate(entrypoint, 1500000)
+        #with open('C:/dev/debug.bin', 'wb') as f:
+        #    f.write(self.mu.mem_read(0x40030000, 0x10000))
+        #    f.write(self.mu.mem_read(0x7C010000, 0x10000))
         assert self.vbar != -1
         assert self.ttbr != -1
+        if self.l3_table == -1:
+            self.found_smc_evp = False
+            return
+        self.found_smc_evp = True
         assert self.l3_table != -1
 
         # Remove previous hook, setup to invoke smc_cpu_off
@@ -259,6 +272,8 @@ class Emulator:
         # Execute exception handler
         self.simulate(self.vbar + 0x400, 10000)
         self.core0_stack_page = self.mu.reg_read(UC_ARM64_REG_SP) & ~0xFFF
+        print '%x' % self.core0_stack_page
+        print '%x' % self.l3_table
 
 
 def accept_file(li, n):
@@ -435,6 +450,12 @@ def load_file(li, neflags, format):
     # Refresh IRAM contents to reflect any decompression that may have occurred.
     idaapi.mem2base(emu.read_mem(PK1L_ADDRESS, PK1L_SIZE), PK1L_ADDRESS)
 
+    if not emu.found_smc_evp:
+        # Set coldboot crt0
+        idc.create_insn(emu.entrypoint)
+        idc.set_name(emu.entrypoint, 'coldboot_crt0')
+        return 1
+
     iram_mappings  = []
     dram_mappings  = []
     tzram_mappings = []
@@ -502,17 +523,17 @@ def load_file(li, neflags, format):
     for (vaddr, paddr, size, attr) in sorted(tzram_mappings, key=lambda m:m[0]):
         inserted = False
         for i in xrange(len(tzram_groups)):
-            if vaddr == tzram_groups[i][-1][0] + tzram_groups[i][-1][2]:
+            if vaddr == tzram_groups[i][-1][0] + tzram_groups[i][-1][2] and tzram_groups[i][-1][2] != 0x40000:
                 tzram_groups[i].append((vaddr, paddr, size, attr))
                 inserted = True
                 break
         if not inserted:
             tzram_groups.append([(vaddr, paddr, size, attr)])
 
-    #for group in tzram_groups:
-    #    print 'Group'
-    #    for m in group:
-    #        print '    %x %x %x %x' % m
+    for group in tzram_groups:
+        print 'Group'
+        for m in group:
+            print '    %x %x %x %x' % m
 
     # Process groups
     for group in tzram_groups:
@@ -549,8 +570,8 @@ def load_file(li, neflags, format):
                 assert len(filter(lambda g: is_executable(g[0]) and g[0][2] == 0x1000, tzram_groups)) == 1
                 add_segment(vaddr, size, '.vectors', 'CODE')
                 load_mapping(emu, group[0])
-        elif len(group) == 1 and group[0][2] == 0x10000:
-            assert len(filter(lambda g: len(g) == 1 and not is_executable(g[0]) and g[0][2] == 0x10000, tzram_groups)) == 1
+        elif len(group) == 1 and (group[0][2] == 0x10000 or group[0][2] == 0x40000):
+            assert len(filter(lambda g: len(g) == 1 and not is_executable(g[0]) and (g[0][2] == 0x10000 or g[0][2] == 0x40000), tzram_groups)) == 1
             assert not is_writable(group[0])
             vaddr, paddr, size, attr = group[0]
             add_segment(vaddr, size, '.tzram_ro_view', 'CONST')
